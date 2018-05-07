@@ -146,12 +146,17 @@ function load(path) {
         // get the usage
         const usage = await (async _ => {
             try {
-                const uses = await query(
-                    `https://management.azure.com/subscriptions/${subscription}/providers/Microsoft.Commerce/UsageAggregates?api-version=2015-06-01-preview&reportedStartTime=${from.clone().add(-1, "day").format("YYYY-MM-DD")}T00%3a00%3a00%2b00%3a00&reportedEndTime=${to.clone().add(2, "day").format("YYYY-MM-DD")}T00%3a00%3a00%2b00%3a00&aggregationGranularity=Daily&showDetails=false`,
-                    accessToken,
-                    "Fetching usage"
-                );
-                return JSON.parse(uses);
+                const all = [];
+                let url = `https://management.azure.com/subscriptions/${subscription}/providers/Microsoft.Commerce/UsageAggregates?api-version=2015-06-01-preview&reportedStartTime=${from.clone().add(-1, "day").format("YYYY-MM-DD")}T00%3a00%3a00%2b00%3a00&reportedEndTime=${to.clone().add(2, "day").format("YYYY-MM-DD")}T00%3a00%3a00%2b00%3a00&aggregationGranularity=Daily&showDetails=false`;
+                do {
+                    const raw = await query(url, accessToken, "Fetching usage");
+                    const uses = JSON.parse(raw);
+                    for (const row of uses.value) {
+                        all.push(row);
+                    }
+                    url = (uses.nextLink) ? uses.nextLink : "";
+                } while (url.length > 0);
+                return all;
             } catch(ex) {
                 console.error(ex);
                 process.exit(1);
@@ -160,7 +165,7 @@ function load(path) {
 
         // add rate and cost
         if (usage) {
-            for (const row of usage.value) {
+            for (const row of usage) {
                 const rate = rateCard.Meters.find(meter => meter.MeterId === row.properties.meterId);
                 if (rate) {
                     if (rate.Unit === row.properties.unit) {
@@ -179,7 +184,7 @@ function load(path) {
 
         // group by date
         const byDate = [];
-        for (const row of usage.value) {
+        for (const row of usage) {
             const grouping = row.properties.usageStartTime.substring(0, 10);
             let group = byDate.find(g => g.name === grouping);
             if (!group) {
