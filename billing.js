@@ -78,8 +78,10 @@ function query(url, accessToken, message) {
             spinner.stop(true);
             if (!error && response.statusCode == 200) {
                 resolve(body);
-            } else {
+            } else if (error) {
                 reject(error);
+            } else {
+                reject(new Error(`HTTP ${response.statusCode}: ${body}`));
             }
         });
     });
