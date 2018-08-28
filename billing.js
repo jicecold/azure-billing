@@ -149,7 +149,12 @@ function load(path) {
         const usage = await (async _ => {
             try {
                 const all = [];
-                let url = `https://management.azure.com/subscriptions/${subscription}/providers/Microsoft.Commerce/UsageAggregates?api-version=2015-06-01-preview&reportedStartTime=${from.clone().add(-1, "day").format("YYYY-MM-DD")}T00%3a00%3a00%2b00%3a00&reportedEndTime=${to.clone().add(2, "day").format("YYYY-MM-DD")}T00%3a00%3a00%2b00%3a00&aggregationGranularity=Daily&showDetails=false`;
+                const reportedStartTime = from.clone().utc().add(-1, "day").format("YYYY-MM-DDTmm:HH:ssZ").replace(/:/g, "%3a").replace(/\+/g, "%2b");
+                let endTime = to.clone().utc().add(2, "day");
+                const latest = moment().utc();
+                if (endTime > latest) endTime = latest.startOf("day");
+                const reportedEndTime = endTime.format("YYYY-MM-DDTmm:HH:ssZ").replace(/:/g, "%3a").replace(/\+/g, "%2b")
+                let url = `https://management.azure.com/subscriptions/${subscription}/providers/Microsoft.Commerce/UsageAggregates?api-version=2015-06-01-preview&reportedStartTime=${reportedStartTime}&reportedEndTime=${reportedEndTime}&aggregationGranularity=Daily&showDetails=false`;
                 do {
                     const raw = await query(url, accessToken, "Fetching usage");
                     const uses = JSON.parse(raw);
@@ -176,6 +181,8 @@ function load(path) {
                     } else {
                         console.error(`Unit mismatch for ${row.properties.meterCategory} - ${row.properties.meterSubCategory}, rateCard is in ${meter.MeterId} vs. usage in ${row.properties.meterId}.`);
                     }
+                } else if (row.name.startsWith("Daily_BRSDT_")) {
+                    // ignore aggregates
                 } else {
                     console.error(`No rate found for ${row.properties.meterCategory} - ${row.properties.meterSubCategory}.`);
                 }
@@ -187,16 +194,30 @@ function load(path) {
         // group by date
         const byDate = [];
         for (const row of usage) {
-            const grouping = row.properties.usageStartTime.substring(0, 10);
-            let group = byDate.find(g => g.name === grouping);
-            if (!group) {
-                group = {
-                    name: grouping,
-                    entries: []
-                };
-                byDate.push(group);
+            if (row.rate) {
+                const grouping = row.properties.usageStartTime.substring(0, 10);
+                let group = byDate.find(g => g.name === grouping);
+                if (!group) {
+                    group = {
+                        name: grouping,
+                        entries: []
+                    };
+                    byDate.push(group);
+                }
+                let name = (row.properties.meterSubCategory) ? `${row.properties.meterCategory} - ${row.properties.meterSubCategory}` : `${row.properties.meterCategory}`;
+                if (row.properties.meterCategory === "Storage") name += ` - ${row.properties.meterName}`;
+                const entry = group.entries.find(e => e.name === name && e.rate === row.rate && e.unit === row.properties.unit);
+                if (entry) {
+                    entry.quantity += row.properties.quantity;
+                } else {
+                    group.entries.push({
+                        name: name,
+                        quantity: row.properties.quantity,
+                        rate: row.rate,
+                        unit: row.properties.unit
+                    });
+                }
             }
-            group.entries.push(row);
         }
 
         // summarize
@@ -208,13 +229,13 @@ function load(path) {
                 let local_total = 0, local_represents = 0, index = 0, output = [];
                 group.entries.sort((a, b) => b.cost - a.cost);
                 for (const entry of group.entries) {
-                    global_total += entry.cost;
-                    local_total += entry.cost;
+                    const cost = entry.quantity * entry.rate;
+                    global_total += cost;
+                    local_total += cost;
                     if (index < count) {
-                        const name = (entry.properties.meterSubCategory) ? `${entry.properties.meterCategory} - ${entry.properties.meterSubCategory}` : `${entry.properties.meterCategory}`;
-                        output.push(`  ${name}, ${entry.properties.quantity} ${entry.properties.unit} @ $${entry.rate} = ${numbro(entry.cost).formatCurrency({ mantissa: 2 })}`);
-                        global_represents += entry.cost;
-                        local_represents += entry.cost;
+                        output.push(`  ${entry.name}, ${entry.quantity} ${entry.unit} @ $${entry.rate} = ${numbro(cost).formatCurrency({ mantissa: 2 })}`);
+                        global_represents += cost;
+                        local_represents += cost;
                     }
                     index++;
                 }
